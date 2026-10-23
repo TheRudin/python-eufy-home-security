@@ -46,6 +46,7 @@ from ..exceptions import (
     CipherKeyMissingError,
     CipherUnavailableError,
     CloudApiError,
+    CloudCertificateError,
     CommunicationError,
     EmptyResponseError,
     EufySecurityError,
@@ -1198,7 +1199,7 @@ class EufyCloudApi:
                 retry_after = _retry_after(resp.headers.get("Retry-After"))
                 text = await resp.text()
         except (aiohttp.ClientError, TimeoutError, UnicodeDecodeError) as exc:
-            raise CommunicationError(f"cloud request to {path} failed: {exc}") from exc
+            raise _transport_error(f"cloud request to {path} failed: {exc}", exc) from exc
         _LOGGER.debug("← %s HTTP %s: %s", path, status, text[:500])
         if status == const.HTTP_TOO_MANY_REQUESTS:
             await self._hold_off(
@@ -3388,7 +3389,7 @@ class EufyCloudApi:
                 text = await resp.text()
         except (aiohttp.ClientError, TimeoutError) as exc:
             _LOGGER.debug("← %s failed after %.0f ms: %r", path, _ms(started), exc)
-            raise CommunicationError(f"cloud request to {path} failed: {exc}") from exc
+            raise _transport_error(f"cloud request to {path} failed: {exc}", exc) from exc
         except UnicodeDecodeError as exc:
             raise ProtocolError(f"cloud response to {path} was not text: {exc}") from exc
         _WIRE.debug("← %s HTTP %s body %s", path, status, text)
@@ -3663,7 +3664,7 @@ class EufyCloudApi:
                         if len(body) > limit:
                             break
         except (aiohttp.ClientError, TimeoutError) as exc:
-            raise CommunicationError(f"picture download from {host} failed: {exc}") from exc
+            raise _transport_error(f"picture download from {host} failed: {exc}", exc) from exc
         _LOGGER.debug("picture GET on %s: HTTP %s, %d bytes", host, status, len(body))
         if status != 200:
             raise CloudApiError(status, f"picture download refused (HTTP {status})", endpoint=host)
@@ -3802,6 +3803,16 @@ def _loose_code(text: str) -> int | None:
     """The body ``code`` of an error page if it carries one (a 401 body may not)."""
     code = _loose_object(text).get("code")
     return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+
+def _transport_error(message: str, exc: BaseException) -> CommunicationError:
+    """The error for a request that failed in transport: :class:`CloudCertificateError`
+    when the host's TLS certificate was not trusted, else :class:`CommunicationError`."""
+    import aiohttp  # noqa: PLC0415 - deferred so a cache-only run never imports it
+
+    if isinstance(exc, aiohttp.ClientConnectorCertificateError):
+        return CloudCertificateError(message)
+    return CommunicationError(message)
 
 
 def _retry_after(value: str | None) -> float | None:
